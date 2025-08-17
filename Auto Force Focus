@@ -1,0 +1,91 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+
+local ForceFocus = require(ReplicatedStorage.LightsaberModules.SharedBehavior.ForceMoves.ForceFocus)
+local UI = require(ReplicatedStorage.LightsaberModules.SharedBehavior.ForceMoves.ForceFocus.UIEffect)
+local ServerState = require(ReplicatedStorage.LightsaberModules.ServerState)
+local Remote = ReplicatedStorage.LightsaberRemotes.UpdateForceFocus
+local SmokeTemplate = ReplicatedStorage.LightsaberModules.SharedBehavior.Effects.Smoke
+local lightsaberModules = ReplicatedStorage:WaitForChild("LightsaberModules")
+local targetModule = require(lightsaberModules.SharedBehavior.ForceMoves.ForceFocus:WaitForChild("FindFocusCharacter"))
+
+local isClient = RunService:IsClient()
+local hookfunc = hookfunction or function(f, r) return f end
+
+local function getClosestTarget(character)
+	local hrp = character.HumanoidRootPart
+	local closest, closestDist = nil, math.huge
+	for _, tagged in ipairs(CollectionService:GetTagged("Character")) do
+		local t = tagged.Parent
+		if t and t ~= character and t:FindFirstChild("Humanoid") and t.Humanoid.Health > 0 and ServerState.CanHit(character, t) then
+			local d = (hrp.Position - t.HumanoidRootPart.Position).Magnitude
+			if d <= closestDist then
+				closest = t
+				closestDist = d
+			end
+		end
+	end
+	return closest
+end
+
+targetModule = hookfunc(targetModule, function(self)
+	local c = self.Character
+	if not c or not c:FindFirstChild("HumanoidRootPart") then return nil end
+	if not ServerState.IsCharacterAlive(c) then return nil end
+	return getClosestTarget(c)
+end)
+
+ForceFocus.Start = function(self)
+	UI.Create()
+	ForceFocus._resetState(self)
+	local character = self.Character
+	local activeSmoke = {}
+	self.forceFocusTrove:Connect(RunService.Heartbeat, function()
+		if not ServerState.CanForceFocus(character) then return end
+		local target = targetModule(self)
+		if target and target ~= self.cachedCharacter then
+			ForceFocus._cleanOldInfo(self)
+			self.cachedCharacter = target
+			self.focusTimers[target] = os.clock()
+			self.focusProgressCache[target] = 0
+			self.previousFocusCharacter = target
+			UI.Create(target)
+			if isClient then Remote:FireServer(target) end
+			if isClient and not activeSmoke[target] then
+				local hrp = target:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					local smoke = SmokeTemplate:Clone()
+					smoke.Enabled = true
+					smoke.Parent = hrp
+					activeSmoke[target] = smoke
+				end
+			end
+		elseif not target and self.cachedCharacter then
+			ForceFocus._cleanOldInfo(self)
+			if isClient then Remote:FireServer(nil) end
+			if isClient and activeSmoke[self.cachedCharacter] then
+				activeSmoke[self.cachedCharacter]:Destroy()
+				activeSmoke[self.cachedCharacter] = nil
+			end
+			self.cachedCharacter = nil
+		end
+		for t, smoke in pairs(activeSmoke) do
+			if not t.Parent or t ~= self.cachedCharacter or not ServerState.IsCharacterAlive(t) then
+				smoke:Destroy()
+				activeSmoke[t] = nil
+				UI.Destroy(t)
+			end
+		end
+	end)
+end
+
+ForceFocus.Stop = function(self)
+	ForceFocus._resetState(self)
+	if isClient then
+		Remote:FireServer(nil)
+		for _, smoke in pairs(self.activeSmoke or {}) do smoke:Destroy() end
+	end
+end
+
+print("Auto Force Focus Initiated")
